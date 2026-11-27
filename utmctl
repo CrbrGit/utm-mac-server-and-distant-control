@@ -1,0 +1,60 @@
+#!/bin/bash
+# Run utmctl from an SSH session by launching it as a one-shot LaunchAgent
+# in the logged-in user's GUI session (utmctl's Apple Events fail from sshd).
+# Usage: utmctl [--stdin] <utmctl args...>    e.g. utmctl start <VM>
+#   --stdin      forward this script's stdin to utmctl (e.g. file push)
+#   UTM_TIMEOUT  seconds to wait for utmctl (default 600)
+set -euo pipefail
+
+UTMCTL=/Applications/UTM.app/Contents/MacOS/utmctl
+TIMEOUT=${UTM_TIMEOUT:-600}
+STDIN=0
+if [ "${1:-}" = "--stdin" ]; then STDIN=1; shift; fi
+[ $# -gt 0 ] || { echo "usage: ${0##*/} [--stdin] <utmctl args...>" >&2; exit 2; }
+[ "$(uname -s)" = Darwin ] || { echo "macOS only" >&2; exit 1; }
+[ -x "$UTMCTL" ] || { echo "utmctl not found at $UTMCTL" >&2; exit 1; }
+ME=$(id -un)
+[ "$(stat -f %Su /dev/console)" = "$ME" ] || { echo "$ME must be logged in on the Mac's GUI" >&2; exit 1; }
+
+DOMAIN="gui/$(id -u)"
+D=$(mktemp -d "${TMPDIR:-/tmp}/utm.XXXXXX")
+LABEL="local.utm-wrapper.${D##*.}"
+P="$D/job.plist"
+cleanup() { launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true; rm -rf "$D"; }
+trap cleanup EXIT
+
+# plutil writes each argument verbatim, so no XML escaping is needed.
+plutil -create xml1 "$P"
+plutil -insert Label -string "$LABEL" "$P"
+plutil -insert ProgramArguments -array "$P"
+plutil -insert ProgramArguments.0 -string "$UTMCTL" "$P"
+i=1
+for a in "$@"; do plutil -insert "ProgramArguments.$i" -string "$a" "$P"; i=$((i + 1)); done
+plutil -insert RunAtLoad -bool true "$P"
+plutil -insert StandardOutPath -string "$D/out" "$P"
+plutil -insert StandardErrorPath -string "$D/err" "$P"
+if [ "$STDIN" = 1 ]; then
+  cat > "$D/in"
+  plutil -insert StandardInPath -string "$D/in" "$P"
+fi
+
+launchctl bootstrap "$DOMAIN" "$P"
+
+# launchd does not hand back the exit status; read it from launchctl print.
+rc=''
+ticks=0
+while [ "$ticks" -lt $((TIMEOUT * 5)) ]; do
+  info=$(launchctl print "$DOMAIN/$LABEL" 2>/dev/null || true)
+  if [ -n "$info" ] && ! printf '%s\n' "$info" | grep -q 'state = running'; then
+    rc=$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*last exit code = \([0-9][0-9]*\).*/\1/p' | head -n 1)
+    [ -n "$rc" ] && break
+    if printf '%s\n' "$info" | grep -q 'last terminating signal'; then rc=1; break; fi
+  fi
+  sleep 0.2
+  ticks=$((ticks + 1))
+done
+
+[ -f "$D/out" ] && cat "$D/out"
+[ -f "$D/err" ] && cat "$D/err" >&2
+if [ -z "$rc" ]; then echo "utmctl timed out after ${TIMEOUT}s" >&2; exit 124; fi
+exit "$rc"

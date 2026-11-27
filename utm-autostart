@@ -1,0 +1,39 @@
+#!/bin/bash
+# Start UTM VMs at GUI login. Run from a LaunchAgent (RunAtLoad).
+# VMs come from the config file (one UUID or name per line, # comments)
+# plus any command-line arguments.
+# Usage: utm-autostart.sh [<vm>...]    UTM_AUTOSTART_CONF overrides the config path
+set -uo pipefail
+
+UTMCTL=/Applications/UTM.app/Contents/MacOS/utmctl
+CONF=${UTM_AUTOSTART_CONF:-/etc/utm-autostart.conf}
+
+if [ -f "$CONF" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%%#*}
+    line=$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    [ -n "$line" ] && set -- "$@" "$line"
+  done < "$CONF"
+fi
+[ $# -gt 0 ] || { echo "$(date '+%F %T') no VMs listed in $CONF" >&2; exit 0; }
+
+# UTM may still be launching at login; wait up to ~2 minutes for it to answer.
+for _ in $(seq 1 60); do
+  "$UTMCTL" list >/dev/null 2>&1 && break
+  sleep 2
+done
+
+rc=0
+for vm in "$@"; do
+  if [ "$("$UTMCTL" status "$vm" 2>/dev/null)" = started ]; then
+    echo "$(date '+%F %T') $vm already started"
+    continue
+  fi
+  if "$UTMCTL" start "$vm" --hide; then
+    echo "$(date '+%F %T') $vm started"
+  else
+    echo "$(date '+%F %T') $vm FAILED to start" >&2
+    rc=1
+  fi
+done
+exit "$rc"
