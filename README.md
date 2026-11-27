@@ -1,5 +1,9 @@
 # UTM on a headless Mac: SSH control and VM autostart
 
+> **Status:** personal notes, shared as-is in case they help someone hitting the
+> same problem. Not a maintained project: issues and pull requests may go
+> unanswered. Fork it and adapt it freely (0BSD license).
+
 ## Goal
 
 Use a Mac (here a Mac mini) as an always-on VM server for QEMU and Apple
